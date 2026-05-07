@@ -1,116 +1,197 @@
-# Dictionnaire des données — mart_ml
-
-Table : `PFE_SPARK.MARTS_ML.MART_ML`  
-Granularité : un ticket Apache Spark JIRA par ligne  
-Lignes attendues : ~46 100 (train + validation)
+# Dictionnaire des données — PFE Spark Triage
 
 ---
 
-## Colonnes d'identification et de partitionnement
+## MARTS_ML.MART_ML
+
+Table Gold de référence pour le pipeline d'inférence.
+
+**Granularité :** un ticket Apache Spark JIRA par ligne  
+**Lignes réelles :** 42 083 (38 274 train + 3 809 validation)  
+**Filtre :** `split IN ('train', 'validation')` — les tickets 2024+ (excluded) sont absents
+
+### Identification et partitionnement
 
 | Colonne | Type | Description |
 |---------|------|-------------|
-| `key` | VARCHAR | Clé unique du ticket JIRA (format : SPARK-NNNNN). Clé primaire. |
-| `created_at` | TIMESTAMP_TZ | Date et heure de création du ticket (fuseau horaire inclus). |
-| `split` | VARCHAR | Partition temporelle : `train` (créé avant 2023-01-01) ou `validation` (2023). |
+| `key` | VARCHAR | Clé unique du ticket JIRA (ex. SPARK-12345). Clé primaire. |
+| `created_at` | TIMESTAMP_TZ | Date et heure de création du ticket. |
+| `split` | VARCHAR | Partition temporelle : `train` (avant 2023) ou `validation` (2023). |
 
-## Cibles de classification (§5.1)
+### Cibles de classification
 
-| Colonne | Type | Description | Classes |
-|---------|------|-------------|---------|
-| `issuetype` | VARCHAR | Type d'incident consolidé (cible principale). | Bug, Improvement, Sub-task, New Feature, Task, Test, Documentation, Question, Other |
-| `resolution` | VARCHAR | Résolution consolidée (cible secondaire). | Fixed, Won't Fix, Not A Problem, Incomplete, Duplicate, Invalid, Cannot Reproduce |
+| Colonne | Type | Classes | Fréquence approx. |
+|---------|------|---------|-------------------|
+| `issuetype` | VARCHAR | Bug, Improvement, Sub-task, New Feature, Task, Test, Documentation, Question, Other | Bug 45%, Improvement 30%, Sub-task 15%, autres <5% chacun |
+| `resolution` | VARCHAR | Fixed, Won't Fix, Not A Problem, Incomplete, Duplicate, Invalid, Cannot Reproduce | Fixed ~62%, Won't Fix ~16%, autres <10% chacun |
 
-## Texte nettoyé
-
-| Colonne | Type | Description |
-|---------|------|-------------|
-| `summary_clean` | VARCHAR | Résumé du ticket après nettoyage NLP (HTML, JIRA markup, URLs supprimés). |
-| `description_clean` | VARCHAR | Description complète après nettoyage NLP. NULL si absente (~2,4 %). |
-| `comments_concat` | VARCHAR | Commentaires agrégés chronologiquement, séparés par ` \| `, tronqués à 3 000 caractères. Chaîne vide si aucun commentaire. |
-
-## Représentations textuelles (V6 Hybrid RCA)
+### Texte nettoyé
 
 | Colonne | Type | Description |
 |---------|------|-------------|
-| `text_noco` | VARCHAR | Représentation NOCO (No Comments) — format structuré TICKET/TYPE/STATUS/DESC, tronquée à 2 000 caractères. Reflète la distribution des tickets de validation (sans historique). |
+| `summary_clean` | VARCHAR | Résumé après nettoyage NLP 6 étapes (HTML, JIRA markup, URLs, espaces). |
+| `description_clean` | VARCHAR | Description complète nettoyée. Chaîne vide si absente (~2,4 % des tickets). |
+| `comments_concat` | VARCHAR | Commentaires agrégés chronologiquement, tronqués à 3 000 caractères. Chaîne vide si aucun commentaire. |
 
-*Note : `text_rich` est généré par `cortex/01_train_enriched.sql` et non stocké dans mart_ml.*
-
-## Métadonnées pour le boost de récupération
-
-| Colonne | Type | Description |
-|---------|------|-------------|
-| `priority` | VARCHAR | Priorité du ticket (Blocker, Critical, Major, Minor, Trivial). |
-| `status` | VARCHAR | Statut courant (Open, In Progress, Resolved, Closed…). |
-| `reporter` | VARCHAR | Identifiant de l'auteur du ticket. |
-| `assignee` | VARCHAR | Identifiant de l'assignataire. `Unassigned` si non renseigné (~34 % des tickets). |
-
-## Features changelog (contribution originale du PFE)
-
-Ces features sont absentes du hackathon V6 originel et constituent la contribution technique principale.
+### Représentation textuelles pour l'inférence
 
 | Colonne | Type | Description |
 |---------|------|-------------|
-| `n_total_changes` | NUMBER | Nombre total de changements de champs enregistrés dans l'historique. |
-| `n_status_changes` | NUMBER | Nombre de transitions de statut (ex. Open → In Progress → Resolved). |
+| `text_noco` | VARCHAR | Représentation structurée sans commentaires (format TICKET/TYPE/STATUS/DESC), tronquée à 2 000 caractères. Utilisée comme entrée de l'embedding de récupération. |
+
+Format exact de `text_noco` :
+```
+TICKET: {summary_clean}
+TYPE: {issuetype} | PRI: {priority}
+STATUS: {status}
+DESC: {description_clean[:800]}
+```
+
+### Métadonnées pour le boost de récupération
+
+| Colonne | Type | Description | Boost KNN |
+|---------|------|-------------|-----------|
+| `priority` | VARCHAR | Blocker, Critical, Major, Minor, Trivial. | +0,10 si égal au ticket requête |
+| `status` | VARCHAR | Open, In Progress, Resolved, Closed, Reopened. | +0,08 si égal |
+| `reporter` | VARCHAR | Identifiant de l'auteur du ticket. | +0,05 si égal |
+| `assignee` | VARCHAR | Identifiant de l'assignataire. `Unassigned` si non renseigné (~34 %). | — |
+
+### Features changelog (contribution originale du PFE)
+
+Ces features sont absentes des travaux antérieurs sur ce dataset et constituent
+la contribution technique distinctive du projet.
+
+| Colonne | Type | Description |
+|---------|------|-------------|
+| `n_total_changes` | NUMBER | Nombre total de changements de champs enregistrés dans le changelog. |
+| `n_status_changes` | NUMBER | Nombre de transitions de statut (Open → In Progress → Resolved…). |
 | `n_priority_changes` | NUMBER | Nombre de changements de priorité. |
-| `n_assignee_changes` | NUMBER | Nombre de reasignations. Indicateur de complexité et d'escalade. |
-| `n_resolution_changes` | NUMBER | Nombre de changements de résolution (ex. réouvertures). |
-| `was_escalated` | NUMBER (0/1) | 1 si la priorité a augmenté au moins une fois dans l'historique (ex. Minor → Major). |
-| `n_people_involved` | NUMBER | Nombre d'auteurs distincts dans le changelog (diversité des intervenants). |
-| `first_assignee` | VARCHAR | Premier assignataire selon le changelog. NULL si aucun événement d'assignation. |
+| `n_assignee_changes` | NUMBER | Nombre de réassignations. Indicateur de complexité. |
+| `n_resolution_changes` | NUMBER | Nombre de changements de résolution (réouvertures incluses). |
+| `was_escalated` | NUMBER (0/1) | 1 si la priorité a augmenté au moins une fois (ex. Minor → Major). |
+| `n_people_involved` | NUMBER | Nombre d'auteurs distincts dans le changelog. |
+| `first_assignee` | VARCHAR | Premier assignataire selon le changelog. NULL si aucun événement. |
 
-## Features de liens entre tickets
-
-| Colonne | Type | Description |
-|---------|------|-------------|
-| `n_links_total` | NUMBER | Nombre total de liens sortants du ticket. |
-| `n_duplicates` | NUMBER | Nombre de liens de type "Duplicate" — ticket marqué comme doublon d'autres. |
-| `n_blocks` | NUMBER | Nombre de tickets que ce ticket bloque (liens entrants de type "Blocks"). |
-| `n_blocked_by` | NUMBER | Nombre de tickets qui bloquent ce ticket (liens sortants de type "Blocks"). |
-| `n_relates` | NUMBER | Nombre de liens de type "Relates" — relation informelle entre tickets. |
-
-## Features de commentaires
+### Features de liens entre tickets
 
 | Colonne | Type | Description |
 |---------|------|-------------|
-| `n_comments` | NUMBER | Nombre total de commentaires après nettoyage (corps ≥ 10 caractères). |
-| `n_commenters` | NUMBER | Nombre d'auteurs distincts ayant commenté le ticket. |
+| `n_links_total` | NUMBER | Nombre total de liens sortants. |
+| `n_duplicates` | NUMBER | Liens de type "Duplicate". |
+| `n_blocks` | NUMBER | Tickets que ce ticket bloque. |
+| `n_blocked_by` | NUMBER | Tickets qui bloquent ce ticket. |
+| `n_relates` | NUMBER | Liens de type "Relates". |
 
-## Métriques de timing et de longueur
+### Features de commentaires
 
 | Colonne | Type | Description |
 |---------|------|-------------|
-| `resolution_days` | NUMBER | Nombre de jours entre la création et la résolution, plafonné à 5 000. NULL si non résolu. |
+| `n_comments` | NUMBER | Nombre de commentaires (corps ≥ 10 caractères après nettoyage). |
+| `n_commenters` | NUMBER | Nombre d'auteurs distincts ayant commenté. |
+
+### Métriques de timing et de longueur
+
+| Colonne | Type | Description |
+|---------|------|-------------|
+| `resolution_days` | NUMBER | Jours entre création et résolution, plafonné à 5 000. 0 si non résolu. |
 | `summary_length` | NUMBER | Longueur en caractères du résumé nettoyé. |
-| `description_length` | NUMBER | Longueur en caractères de la description nettoyée. 0 si NULL. |
+| `description_length` | NUMBER | Longueur en caractères de la description nettoyée. |
 
 ---
 
-## Tables annexes
+## CORTEX.MART_PREDICTIONS
 
-### `PFE_SPARK.CORTEX.TRAIN_EMBEDDINGS`
+Résultats de l'évaluation du pipeline sur le jeu de validation.
 
-| Colonne | Type | Description |
-|---------|------|-------------|
-| `key` | VARCHAR | Clé du ticket d'entraînement. |
-| `issuetype` | VARCHAR | Label issuetype (index de récupération). |
-| `resolution` | VARCHAR | Label resolution (index de récupération). |
-| `priority` | VARCHAR | Pour le boost de métadonnées lors de l'inférence. |
-| `status` | VARCHAR | Pour le boost de métadonnées. |
-| `reporter` | VARCHAR | Pour le boost de métadonnées. |
-| `text_rich` | VARCHAR | Représentation RICH (TICKET + RCA + COMMENTS) pour le contexte LLM. |
-| `embedding_noco` | VECTOR(FLOAT, 1024) | Embedding voyage-multilingual-2 sur text_noco. |
-| `embedding_rich` | VECTOR(FLOAT, 1024) | Embedding voyage-multilingual-2 sur text_rich. |
-
-### `PFE_SPARK.CORTEX.MART_PREDICTIONS`
+**Lignes :** 3 809 (un ticket de validation par ligne)  
+**Peuplé par :** `python load/run_ml_pipeline.py`
 
 | Colonne | Type | Description |
 |---------|------|-------------|
-| `key` | VARCHAR | Clé du ticket de validation. |
-| `predicted_issuetype` | VARCHAR | Issuetype prédit par le pipeline V6. |
-| `predicted_resolution` | VARCHAR | Résolution prédite. |
-| `fix_summary` | VARCHAR | Résumé du correctif généré par llama3.1-70b (1-2 phrases). |
-| `method_issuetype` | VARCHAR | Chemin emprunté : `DIRECT` (vote pondéré) ou `LLM` (arbitrage mistral-large2). |
-| `method_resolution` | VARCHAR | Chemin emprunté : `DIRECT` ou `LLM`. |
+| `key` | VARCHAR | Clé du ticket de validation (SPARK-NNNNN). |
+| `true_issuetype` | VARCHAR | Label réel issuetype (ground truth). |
+| `true_resolution` | VARCHAR | Label réel résolution (ground truth). |
+| `pred_issuetype` | VARCHAR | Issuetype prédit par le pipeline KNN. |
+| `pred_resolution` | VARCHAR | Résolution prédite. |
+| `conf_issuetype` | FLOAT | Confiance du vote pondéré pour issuetype (0–1). |
+| `conf_resolution` | FLOAT | Confiance du vote pondéré pour résolution (0–1). |
+| `method` | VARCHAR | Toujours `DIRECT` dans l'implémentation Python (vote pondéré). |
+| `fix_summary` | VARCHAR | Vide dans l'implémentation Python (réservé pour l'implémentation Cortex). |
+
+### Métriques d'évaluation (calculées sur MART_PREDICTIONS)
+
+| Cible | Accuracy | Macro-F1 |
+|-------|----------|----------|
+| issuetype | **75,32 %** | 33,77 % |
+| résolution | **91,52 %** | 16,40 % |
+
+---
+
+## MARTS_ANALYTICS.MART_ANALYTICS_OPS
+
+Agrégats pour la page "Vue d'ensemble" et "Dynamique de résolution" du tableau de bord.
+
+**Granularité :** mois × issuetype  
+**Lignes :** 1 352
+
+| Colonne | Type | Description |
+|---------|------|-------------|
+| `month` | DATE | Premier jour du mois (DATE_TRUNC). |
+| `issuetype` | VARCHAR | Type d'incident. |
+| `total_issues` | NUMBER | Nombre de tickets créés ce mois pour ce type. |
+| `total_resolved` | NUMBER | Tickets ayant une résolution non-NULL. |
+| `median_resolution_days` | FLOAT | Médiane des délais de résolution (tickets résolus uniquement). |
+| `avg_resolution_days` | FLOAT | Moyenne des délais de résolution. |
+| `pct_fixed` | FLOAT | % de tickets résolus en "Fixed". |
+| `pct_wontfix` | FLOAT | % de tickets résolus en "Won't Fix". |
+| `pct_duplicate` | FLOAT | % de tickets marqués "Duplicate". |
+| `pct_cannot_reproduce` | FLOAT | % de tickets "Cannot Reproduce". |
+| `avg_summary_length` | FLOAT | Longueur moyenne du résumé (caractères). |
+| `avg_description_length` | FLOAT | Longueur moyenne de la description. |
+| `avg_n_comments` | FLOAT | Nombre moyen de commentaires par ticket. |
+
+---
+
+## MARTS_ANALYTICS.MART_ANALYTICS_DEPS
+
+Agrégats pour les pages "Charge de travail" et "Relations" du tableau de bord.
+
+**Granularité :** entité (assignataire ou ticket) × type de section  
+**Lignes :** 13 968
+
+| Colonne | Type | Description |
+|---------|------|-------------|
+| `section_type` | VARCHAR | `assignee` ou `issue_links`. |
+| `entity_key` | VARCHAR | Identifiant de l'assignataire ou clé du ticket. |
+| `n_assigned` | NUMBER | Nombre de tickets assignés (section assignee). |
+| `n_fixed` | NUMBER | Nombre de tickets résolus en Fixed. |
+| `avg_resolution_days` | FLOAT | Délai moyen de résolution. |
+| `top_issuetype` | VARCHAR | Type d'incident le plus fréquent pour cet assignataire. |
+| `n_links` | NUMBER | Nombre total de liens (section issue_links). |
+
+---
+
+## Fichiers locaux (non dans Snowflake)
+
+### results/embeddings_cache.npz
+
+Cache NumPy des embeddings d'entraînement.
+
+| Propriété | Valeur |
+|-----------|--------|
+| Clé dans le fichier | `train_emb` |
+| Shape | (38 274, 384) |
+| Dtype | float32 |
+| Normalisation | L2 (vecteurs unitaires) |
+| Taille sur disque | 57 MB |
+| Modèle source | all-MiniLM-L6-v2 (sentence-transformers) |
+
+Chargé par `apps/inference/inference_app.py` et `load/run_ml_pipeline.py`.
+Si absent, recalculé automatiquement (~10 min).
+
+### Seeds dbt
+
+| Fichier | Lignes | Description |
+|---------|--------|-------------|
+| `dbt_project/seeds/issuetype_mapping.csv` | 22 | raw_value → 9 classes consolidées |
+| `dbt_project/seeds/resolution_mapping.csv` | 15 | raw_value → 7 classes consolidées |

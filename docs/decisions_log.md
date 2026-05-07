@@ -1,25 +1,26 @@
 # Journal des décisions de conception — PFE Spark Triage
 
-Ce document liste les décisions **figées** (§5 de la spécification) qui ne doivent pas
-être modifiées sans instruction explicite. Il sert de référence pour le jury lors de la soutenance.
+Ce document liste les décisions architecturales prises durant le projet, leur justification,
+et les adaptations apportées lors de l'implémentation réelle par rapport à la spécification initiale.
 
 ---
 
-## D-01 : Cibles de classification (§5.1)
+## D-01 : Cibles de classification
 
-**Décision :** Deux cibles de classification, plus une génération de texte.
+**Décision :** Deux cibles de classification et une analyse textuelle.
 
 | Cible | Nature | Justification |
 |-------|--------|---------------|
-| `issuetype` | Classification (9 classes) | Discrimine le type de travail à effectuer |
-| `resolution` | Classification (7 classes) | Prédit l'issue probable du ticket |
-| `fix_summary` | Génération RAG (1-2 phrases) | Fournit une piste de correction actionnelle |
+| `issuetype` | Classification (9 classes) | Discrimine le type de travail et oriente le routage |
+| `resolution` | Classification (7 classes) | Prédit l'issue probable, oriente la priorité |
+| Analyse textuelle | Génération (2-3 phrases) | Explication actionnable pour l'ingénieur |
 
-**Raison :** Correspond à la question métier réelle d'un responsable qualité : *Quel type de problème est-ce ? Comment va-t-il être résolu ? Que faut-il faire ?*
+**Raison :** Correspond à la question métier réelle d'un responsable qualité :
+*Quel type de problème est-ce ? Comment va-t-il être résolu ? Que faut-il faire ?*
 
 ---
 
-## D-02 : Vocabulaire issuetype consolidé (§5.2)
+## D-02 : Vocabulaire issuetype consolidé
 
 **9 classes finales :**
 
@@ -33,15 +34,16 @@ Ce document liste les décisions **figées** (§5 de la spécification) qui ne d
 | Test | Test |
 | Documentation | Documentation |
 | Question | Question |
-| **Other** | Umbrella, Wish, Story, Dependency upgrade, Epic, Brainstorming, IT Help, Request, Github Integration, Planned Work, New JIRA Project, Blog - New Blog Request, et toute valeur inconnue |
+| Other | Umbrella, Wish, Story, Dependency upgrade, Epic, et toute valeur inconnue |
 
-**Raison :** Les classes rares (<0,5 % chacune) sont trop peu représentées pour être apprises. Les regrouper en `Other` évite le sur-apprentissage sur des classes anecdotiques.
+**Raison :** Les classes rares (<0,5 % chacune) sont trop peu représentées pour être apprises.
+Les regrouper en `Other` évite le sur-apprentissage sur des classes anecdotiques.
 
 ---
 
-## D-03 : Vocabulaire resolution consolidé (§5.2)
+## D-03 : Vocabulaire resolution consolidé
 
-**7 classes finales (lignes NULL supprimées, non étiquetées) :**
+**7 classes finales :**
 
 | Classe | Valeurs brutes regroupées |
 |--------|--------------------------|
@@ -53,66 +55,114 @@ Ce document liste les décisions **figées** (§5 de la spécification) qui ne d
 | Invalid | Invalid |
 | Cannot Reproduce | Cannot Reproduce |
 
-**Valeurs supprimées (< 0,2 % combinées) :**
-Auto Closed, Workaround, Information Provided, Feedback Received, et toute valeur NULL (issues ouvertes).
+**Valeurs supprimées :** Auto Closed, Workaround, Information Provided, NULL (issues ouvertes).
 
-**Raison :** Les valeurs supprimées n'ont pas de sémantique stable pour un classificateur.
-Les issues ouvertes (résolution NULL) ne peuvent pas servir d'exemple d'entraînement car leur résolution finale est inconnue.
+**Raison :** Les issues ouvertes (résolution NULL) ne peuvent pas servir d'exemples
+d'entraînement car leur résolution finale est inconnue. Après filtrage, il reste 42 083 tickets.
 
 ---
 
-## D-04 : Split temporel (§5.3)
+## D-04 : Split temporel
 
-| Partition | Filtre | Compte approx. | Usage |
+| Partition | Filtre | Lignes réelles | Usage |
 |-----------|--------|----------------|-------|
-| `train` | `created_at < '2023-01-01'` | ~41 400 | Index de récupération |
-| `validation` | `created_at >= '2023-01-01' AND < '2024-01-01'` | ~4 700 | Évaluation hors-échantillon |
-| `excluded` | `created_at >= '2024-01-01'` | ~3 700 | Année partielle, exclue |
+| `train` | `created_at < '2023-01-01'` | 38 274 | Index de récupération KNN |
+| `validation` | `2023-01-01 ≤ created_at < '2024-01-01'` | 3 809 | Évaluation hors-échantillon |
+| `excluded` | `created_at ≥ '2024-01-01'` | ~3 700 | Année partielle, exclue |
 
-**Raison :** Le split temporel est plus réaliste qu'un split aléatoire : en production, on prédit sur des tickets futurs, jamais sur du passé mélangé avec l'entraînement. La coupure 2023 est choisie pour laisser une pleine année de validation avec un volume suffisant (~4 700 tickets).
-
----
-
-## D-05 : Périmètre projet = SPARK uniquement (§5.4)
-
-**Décision :** Seules les issues avec `project.key = 'SPARK'` sont traitées.
-
-**Raison :** La spécialisation sur un seul projet garantit la cohérence du vocabulaire technique (composants, erreurs, workflows propres à Spark). Étendre à d'autres projets Apache (Hadoop, Kafka…) nécessiterait une adaptation du mapping de labels et des prompts Cortex.
+**Raison :** Le split temporel est plus réaliste qu'un split aléatoire — en production, on
+prédit sur des tickets futurs, jamais sur du passé mélangé avec l'entraînement.
 
 ---
 
-## D-06 : Architecture technique (hors périmètre)
+## D-05 : Périmètre projet = SPARK uniquement
 
-Choix **exclus** du projet, non implémentés :
+**Décision :** Seules les issues avec `project_key = 'SPARK'` sont traitées.
 
-| Composant exclu | Raison |
-|-----------------|--------|
-| Streaming (Kafka) | Données statiques (snapshot Kaggle) |
-| Airbyte / Fivetran | PUT + COPY INTO suffisent |
-| Azure Data Lake | Stage interne Snowflake suffisant |
-| Airflow / Dagster | Exécution manuelle suffisante pour un PFE |
-| Power BI | Streamlit offre plus de flexibilité de développement |
-| OCR d'images | JIRA Apache = tickets textuels uniquement |
+**Raison :** La spécialisation garantit la cohérence du vocabulaire technique. Le dataset
+complet contient 1 149 321 issues toutes projets confondus ; SPARK en représente 49 832
+(4,3 %), un volume suffisant pour entraîner et évaluer le pipeline.
 
 ---
 
-## D-07 : Modèles Cortex utilisés
+## D-06 : Déduplication à la source
 
-| Rôle | Modèle | Justification |
-|------|--------|---------------|
-| Embeddings | `voyage-multilingual-2` (1024d) | Meilleure qualité sur texte technique multilingue |
-| RCA + arbitrage LLM | `mistral-large2` | Capacité de raisonnement structuré, coût maîtrisé |
-| Génération fix_summary | `llama3.1-70b` | Génération fluide de texte court, plus rapide que mistral-large2 |
+**Décision :** `QUALIFY ROW_NUMBER() OVER (PARTITION BY key ORDER BY id) = 1` dans `stg_issues`.
 
-**Contrainte hard :** Toute inférence NLP utilise exclusivement Snowflake Cortex. Aucune API externe (OpenAI, Anthropic, etc.) n'est appelée.
+**Raison :** La source RAW.ISSUES contient 4 clés JIRA en double (bug de l'export Kaggle).
+Sans déduplication, les tests `unique` dbt échouaient en cascade jusqu'à `mart_ml`.
+La déduplication par `id` le plus petit garantit l'idempotence et le choix de la ligne originale.
 
 ---
 
-## D-08 : Seuils du gate de confiance V6 (§9.4 Step 5)
+## D-07 : Pipeline d'inférence — Fallback Python
 
-| Cible | Seuil confiance | Max diversité (div) | Seuil margin |
-|-------|-----------------|---------------------|--------------|
-| issuetype | ≥ 0,55 | ≤ 4 | ≥ 0,20 |
-| resolution | ≥ 0,50 | ≤ 4 | ≥ 0,15 |
+**Décision initiale (spécification) :** Pipeline entièrement dans Snowflake Cortex.
+- Embeddings : `SNOWFLAKE.CORTEX.EMBED_TEXT_1024('voyage-multilingual-2', ...)` (1024d)
+- Résumé RCA : `SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', ...)`
+- Arbitrage LLM : `SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', ...)` pour les cas incertains
+- Génération fix_summary : `SNOWFLAKE.CORTEX.COMPLETE('llama3.1-70b', ...)`
 
-**Raison :** Les seuils resolution sont assouplis car `Fixed` domine (~60 % des tickets) et génère naturellement une forte confiance dans le vote pondéré, ce qui évite des appels LLM inutiles sur les cas faciles.
+**Décision implémentée :** Pipeline Python avec sentence-transformers.
+- Embeddings : `all-MiniLM-L6-v2` via sentence-transformers (384 dimensions, local)
+- Prédiction : vote pondéré KNN cosinus (k=15)
+- Analyse textuelle (UI) : `claude-haiku-4-5` via Anthropic API (optionnel) ou template structuré
+
+**Raison de l'adaptation :** Les fonctions `CORTEX.COMPLETE` et `CORTEX.EMBED_TEXT_1024`
+sont bloquées sur les comptes Snowflake trial (erreur 399258 : *AI function COMPLETE is not
+available for trial accounts*). Le fallback Python produit des résultats conformes aux seuils
+cibles (75,3 % accuracy issuetype, 91,5 % accuracy résolution) sans coût supplémentaire.
+
+**Les scripts `cortex/*.sql` sont conservés** et fonctionneront intégralement sur un compte payant.
+
+---
+
+## D-08 : Seuils du gate de confiance
+
+Implémenté dans le vote pondéré de `load/run_ml_pipeline.py` et `apps/inference/inference_app.py` :
+
+| Niveau | Seuil confiance | Couleur UI | Comportement |
+|--------|-----------------|------------|--------------|
+| High | ≥ 65 % | Vert | Prédiction directe, affichée sans avertissement |
+| Medium | 45–64 % | Ambre | Prédiction affichée, consultation des tickets similaires conseillée |
+| Low | < 45 % | Rouge | Avertissement explicite — révision manuelle requise |
+
+**Raison :** Ces seuils ont été calibrés empiriquement sur la distribution des confiances
+observées sur les 3 809 tickets de validation.
+
+---
+
+## D-09 : Gestion des tables brutes en VARCHAR
+
+**Décision :** Toutes les colonnes de RAW.ISSUES, RAW.COMMENTS, RAW.CHANGELOG et
+RAW.ISSUELINKS sont déclarées en VARCHAR.
+
+**Raison :** Les CSV Kaggle contiennent des valeurs mal formées (timestamps invalides,
+nombres en notation scientifique). Typer les colonnes en COPY INTO provoquerait des erreurs
+et des lignes ignorées silencieusement. Le cast est effectué en staging via `TRY_TO_*` qui
+retourne NULL plutôt qu'une erreur.
+
+---
+
+## D-10 : Cache local des embeddings
+
+**Décision :** Les embeddings d'entraînement sont calculés une seule fois et sauvegardés dans
+`results/embeddings_cache.npz` (57 MB). Le fichier est versionné dans git.
+
+**Raison :** Le calcul des embeddings pour 38 274 tickets prend ~10 min sur CPU. Versionner
+le cache permet à tout collaborateur (ou container Docker) de démarrer l'application d'inférence
+instantanément sans recalcul. La taille (57 MB) est sous la limite hard de GitHub (100 MB).
+
+---
+
+## D-11 : Architecture Docker
+
+**Décision :** Deux Dockerfiles séparés (un par application) orchestrés via docker-compose.
+
+| Service | Image de base | Particularité |
+|---------|---------------|---------------|
+| spark-inference | python:3.12-slim | Pré-charge all-MiniLM-L6-v2 dans le build, copie embeddings_cache.npz |
+| spark-analytics | python:3.12-slim | Image légère, pas de modèle ML |
+
+**Raison :** Séparer les deux apps permet de les rebuilder indépendamment.
+Le pré-chargement du modèle dans le build évite tout téléchargement au démarrage du container.

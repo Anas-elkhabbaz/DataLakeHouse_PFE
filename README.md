@@ -1,193 +1,269 @@
-# Plateforme de Triage des Incidents Apache Spark
+# Spark Issue Triage Platform
 
 **Projet de Fin d'Études (PFE)** — Filière Big Data & IA, UIR Rabat  
 **Étudiant :** Anas Elkhabbaz | **Encadrant entreprise :** SQLI Rabat  
-**Soutenance :** 24 juin 2026
+**Soutenance :** 24 juin 2026  
+**Dépôt :** https://github.com/Anas-elkhabbaz/DataLakeHouse_PFE
 
 ---
 
 ## Description
 
-Cette plateforme ingère le dataset public Apache Spark JIRA (Kaggle, mars 2025) dans
-Snowflake selon une architecture en médaillon (Bronze → Argent → Or), puis expose deux
-consommateurs :
+Plateforme complète de triage automatique des incidents du projet Apache Spark, construite sur
+une architecture en médaillon (Bronze → Argent → Or) hébergée sur Snowflake et orchestrée par dbt.
+Le dataset source est le dump public JIRA Apache Spark de Kaggle (mars 2025, ~49 832 tickets SPARK).
 
-- **Chemin 1 — Inférence IA** : pipeline V6 Hybrid RCA (Snowflake Cortex) qui prédit
-  le type d'incident, la résolution probable et génère un résumé de correctif.
-- **Chemin 2 — Tableau de bord analytique** : dashboard Streamlit multi-pages explorant
-  les patterns de bugs, la dynamique de résolution et la charge des assignataires.
+Deux chemins de consommation sont exposés :
+
+- **Chemin 1 — Inférence IA** : pipeline V6 Hybrid RCA basé sur des embeddings de phrases
+  (`all-MiniLM-L6-v2`) et une recherche KNN cosinus (k=15). Prédit le type d'incident et la
+  résolution probable d'un ticket en temps réel. Génère une analyse textuelle (via Anthropic
+  claude-haiku si une clé API est configurée, sinon un template structuré).
+- **Chemin 2 — Tableau de bord analytique** : dashboard Streamlit 5 pages explorant les
+  volumes mensuels, la dynamique de résolution, la charge des assignataires et les liens entre tickets.
+
+---
+
+## Résultats obtenus
+
+| Métrique | Valeur | Seuil cible |
+|----------|--------|-------------|
+| Accuracy issuetype | **75,32 %** | > 70 % |
+| Accuracy résolution | **91,52 %** | > 75 % |
+| Macro-F1 issuetype | 33,77 % | — |
+| Macro-F1 résolution | 16,40 % | — |
+
+> Le macro-F1 bas est attendu : le dataset est fortement déséquilibré (Bug + Improvement = 75 %
+> des tickets). Les classes rares (Question, Documentation, Cannot Reproduce) ont peu de
+> représentants en validation, ce qui tire la moyenne vers le bas. L'accuracy globale reste
+> au-dessus du seuil cible.
+
+**Jeu de données :**
+
+| Table | Lignes |
+|-------|--------|
+| RAW.ISSUES | 1 149 321 |
+| RAW.COMMENTS | 5 047 714 |
+| RAW.CHANGELOG | 9 653 526 |
+| RAW.ISSUELINKS | 390 063 |
+| Tickets SPARK filtrés | 49 832 |
+| MARTS_ML.MART_ML (train + val) | 42 083 |
+| Tickets d'entraînement | 38 274 |
+| Tickets de validation | 3 809 |
+
+**Tests dbt :** PASS=44 WARN=2 ERROR=0 (les 2 warnings concernent les valeurs "Won't Fix"
+dont l'apostrophe génère un warning SQL dans les tests `accepted_values`).
 
 ---
 
 ## Prérequis
 
-- Python 3.11+
-- Un compte Snowflake (Standard ou Enterprise avec Cortex activé)
-- dbt Core 1.8+
+- Python 3.12 (le dbt venv) + Python 3.11+ (scripts de chargement)
+- Un compte Snowflake (trial ou payant — voir note ci-dessous)
+- dbt-snowflake 1.11+ installé via `uv` dans `dbt_project/.venv/`
 - Les 4 fichiers CSV dans `data/` (issues, comments, changelog, issuelinks)
+- Docker Desktop (optionnel, pour lancer les apps via docker-compose)
+
+> **Note Snowflake Cortex :** Les fonctions `SNOWFLAKE.CORTEX.COMPLETE` et
+> `SNOWFLAKE.CORTEX.EMBED_TEXT_1024` sont bloquées sur les comptes trial. Le pipeline
+> d'inférence utilise donc `sentence-transformers` en local (gratuit, ~80 MB).
+> Les scripts `cortex/*.sql` sont fournis pour référence et fonctionneront sur un compte payant.
 
 ---
 
-## Installation
+## Installation rapide (Docker)
+
+La façon la plus simple de lancer les applications :
 
 ```bash
-# 1. Cloner le dépôt
-git clone <url-du-depot> pfe-spark-triage
-cd pfe-spark-triage
+git clone https://github.com/Anas-elkhabbaz/DataLakeHouse_PFE.git
+cd DataLakeHouse_PFE
 
-# 2. Créer l'environnement virtuel
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # Linux/Mac
+# Configurer les identifiants Snowflake
+cp .env.example .env
+# Éditer .env avec vos valeurs SNOWFLAKE_*
 
-# 3. Installer les dépendances
-pip install -e .
-
-# 4. Configurer les variables d'environnement
-copy .env.example .env
-# Remplir .env avec vos identifiants Snowflake
+# Lancer les deux applications
+docker-compose up --build
 ```
+
+- Application d'inférence : http://localhost:8501
+- Tableau de bord analytique : http://localhost:8502
+
+La première construction télécharge le modèle `all-MiniLM-L6-v2` (~80 MB). Les lancements
+suivants démarrent en quelques secondes grâce au cache Docker.
 
 ---
 
-## Configuration Snowflake
-
-### Étape 1 — Configurer le profil dbt
-
-Copier `dbt_project/profiles.yml.example` vers `~/.dbt/profiles.yml` et remplir les valeurs :
+## Installation manuelle
 
 ```bash
-copy dbt_project\profiles.yml.example %USERPROFILE%\.dbt\profiles.yml
-```
+git clone https://github.com/Anas-elkhabbaz/DataLakeHouse_PFE.git
+cd DataLakeHouse_PFE
 
-### Étape 2 — Créer la base de données et le stage
+# Installer les dépendances de l'app d'inférence
+pip install -r apps/inference/requirements.txt
 
-Exécuter dans un worksheet Snowflake (dans l'ordre) :
+# Installer les dépendances du tableau de bord
+pip install -r apps/analytics/requirements.txt
 
-```sql
--- 1. Base de données, schémas, warehouse
--- Fichier : load/01_create_database.sql
+# Configurer les identifiants
+cp .env.example .env
+# Éditer .env
 
--- 2. Stage interne pour les CSV
--- Fichier : load/02_create_stage.sql
-```
-
-### Étape 3 — Charger les CSV
-
-```bash
-# Inspecte les en-têtes CSV et charge les fichiers vers le stage Snowflake
-python load/03_put_files.py
-```
-
-> **Important :** Vérifier que les positions de colonnes affichées correspondent
-> au mapping dans `load/04_copy_into_raw.sql` avant de l'exécuter.
-
-### Étape 4 — COPY INTO les tables brutes
-
-```sql
--- Fichier : load/04_copy_into_raw.sql
--- Puis vérifier :
--- Fichier : load/05_verify_counts.sql
+# Lancer les apps
+streamlit run apps/inference/inference_app.py   # port 8501
+streamlit run apps/analytics/analytics_app.py  # port 8502
 ```
 
 ---
 
-## Pipeline dbt (couche Argent et Or)
+## Configuration Snowflake (chargement initial des données)
+
+### 1. Écrire le profil dbt
+
+```bash
+python load/write_profiles.py
+```
+
+Ce script lit `.env` et écrit `~/.dbt/profiles.yml` en gérant correctement l'encodage Unicode.
+
+### 2. Créer la base de données, les schémas et le warehouse
+
+```bash
+python load/run_phase1.py
+```
+
+Crée : DATABASE `PFE_SPARK`, 6 schémas (RAW, STAGING, INTERMEDIATE, MARTS_ML,
+MARTS_ANALYTICS, CORTEX), warehouse `PFE_WH`, stage interne `RAW.CSV_STAGE`.
+
+### 3. Inspecter les en-têtes CSV
+
+```bash
+python load/inspect_headers.py
+```
+
+Affiche les positions exactes des colonnes dans chaque CSV. Vérifier que le mapping
+dans `load/04_copy_into_raw.sql` correspond avant de passer à l'étape suivante.
+
+### 4. Charger les CSV vers le stage puis dans les tables brutes
+
+```bash
+python load/03_put_files.py    # PUT vers @RAW.CSV_STAGE (~30 min selon la connexion)
+python load/run_phase4.py      # COPY INTO + vérification des comptes
+```
+
+### 5. Pipeline dbt
 
 ```bash
 cd dbt_project
-
-# Vérifier la connexion
-dbt debug
-
-# Installer les packages
-dbt deps
-
-# Charger les seeds (tables de mapping)
-dbt seed
-
-# Exécuter tous les modèles
-dbt run
-
-# Lancer les tests
-dbt test
-
-# Générer la documentation
-dbt docs generate && dbt docs serve
+.venv\Scripts\dbt deps         # Installer dbt-utils
+.venv\Scripts\dbt seed         # Tables de mapping labels
+.venv\Scripts\dbt run          # 11 modèles
+.venv\Scripts\dbt test         # 46 tests (attendu : PASS=44, WARN=2)
 ```
+
+### 6. Pipeline ML (embeddings + prédictions + évaluation)
+
+```bash
+python load/run_ml_pipeline.py
+```
+
+Génère les embeddings (`results/embeddings_cache.npz`, 57 MB), fait les prédictions
+sur les 3 809 tickets de validation, évalue les performances et sauvegarde les résultats
+dans `results/` et dans `CORTEX.MART_PREDICTIONS` sur Snowflake.
 
 ---
 
-## Pipeline V6 Hybrid RCA (Cortex)
+## Configuration optionnelle — Analyse LLM (Anthropic)
 
-Exécuter les scripts SQL dans un worksheet Snowflake **avec un warehouse MEDIUM** :
+Pour activer l'analyse textuelle générée par IA dans l'application d'inférence,
+ajouter la clé suivante dans `.env` :
 
-```sql
--- 1. Générer les représentations enrichies (RCA summary via Cortex)
---    Fichier : cortex/01_train_enriched.sql  (~41 000 appels LLM, ~20 min)
-
--- 2. Calculer les embeddings duaux
---    Fichier : cortex/02_train_embeddings.sql  (~82 000 appels embed)
-
--- 3. Prédire sur le jeu de validation
---    Fichier : cortex/03_predict.sql  (194M comparaisons cosinus, warehouse LARGE recommandé)
-
--- 4. Évaluer les performances
---    Fichier : cortex/04_evaluate.sql
+```
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
----
-
-## Lancer les applications Streamlit
-
-### Application d'inférence (Chemin 1)
-
-```bash
-streamlit run apps/inference/inference_app.py
-```
-
-Accessible sur : http://localhost:8501
-
-### Tableau de bord analytique (Chemin 2)
-
-```bash
-streamlit run apps/analytics/analytics_app.py
-```
-
-Accessible sur : http://localhost:8502
+Obtenir une clé sur [console.anthropic.com](https://console.anthropic.com).
+Le modèle utilisé est `claude-haiku-4-5` (~$0,25 / 1M tokens — coût négligeable par prédiction).
+Sans cette clé, l'application génère un rapport structuré automatique.
 
 ---
 
 ## Structure du projet
 
 ```
-pfe-spark-triage/
-├── data/                    # CSVs locaux (non versionnés)
-├── load/                    # Scripts de chargement Bronze
-├── dbt_project/             # Transformations Silver + Or
+DataLakeHouse_PFE/
+├── .env.example                 # Template de configuration
+├── .gitignore
+├── .dockerignore
+├── docker-compose.yml           # Lance inference + analytics
+├── pyproject.toml
+├── README.md
+│
+├── data/                        # CSVs source (non versionnés, ~8 GB total)
+│   ├── issues.csv
+│   ├── comments.csv
+│   ├── changelog.csv
+│   └── issuelinks.csv
+│
+├── load/                        # Scripts de chargement Bronze
+│   ├── run_phase1.py            # Crée la base Snowflake
+│   ├── inspect_headers.py       # Vérifie les positions CSV
+│   ├── 03_put_files.py          # PUT vers le stage
+│   ├── run_phase4.py            # COPY INTO + vérification
+│   ├── run_ml_pipeline.py       # Embeddings + prédictions + évaluation
+│   ├── write_profiles.py        # Génère ~/.dbt/profiles.yml
+│   └── 04_copy_into_raw.sql     # DDL tables brutes + mapping $N
+│
+├── dbt_project/                 # Transformations Silver + Or
 │   ├── models/
-│   │   ├── staging/         # Vues 1:1 avec les sources
-│   │   ├── intermediate/    # Logique métier + nettoyage NLP
-│   │   └── marts/           # Tables Gold (ML + Analytics)
-│   ├── seeds/               # Tables de mapping labels
-│   └── macros/              # Macros dbt réutilisables
-├── cortex/                  # Pipeline V6 Hybrid RCA (SQL brut)
+│   │   ├── staging/             # 4 vues (1:1 avec les sources)
+│   │   ├── intermediate/        # 4 tables (NLP, features, split)
+│   │   └── marts/
+│   │       ├── ml/              # MART_ML (42 083 lignes)
+│   │       └── analytics/       # MART_ANALYTICS_OPS + DEPS
+│   ├── seeds/                   # issuetype_mapping.csv, resolution_mapping.csv
+│   ├── macros/                  # clean_jira_text, generate_schema_name
+│   └── .venv/                   # Python 3.12 venv pour dbt-snowflake
+│
+├── cortex/                      # Pipeline V6 Hybrid RCA (SQL Snowflake)
+│   ├── 01_train_enriched.sql    # RCA via CORTEX.COMPLETE (compte payant requis)
+│   ├── 02_train_embeddings.sql  # Embeddings via CORTEX.EMBED_TEXT_1024
+│   ├── 03_predict.sql           # KNN + arbitrage LLM (194M comparaisons)
+│   └── 04_evaluate.sql          # Accuracy, F1, matrice de confusion
+│
 ├── apps/
-│   ├── inference/           # UI de prédiction (Streamlit)
-│   └── analytics/           # Tableau de bord (Streamlit multi-pages)
-└── docs/                    # Documentation en français
+│   ├── inference/               # Application de triage (Streamlit)
+│   │   ├── Dockerfile
+│   │   ├── inference_app.py     # UI professionnelle + KNN temps réel
+│   │   └── requirements.txt
+│   └── analytics/               # Tableau de bord 5 pages (Streamlit)
+│       ├── Dockerfile
+│       ├── analytics_app.py
+│       ├── pages/
+│       │   ├── 1_overview.py
+│       │   ├── 2_resolution_dynamics.py
+│       │   ├── 3_workload.py
+│       │   └── 4_relationships.py
+│       └── requirements.txt
+│
+├── results/                     # Artefacts de l'évaluation
+│   ├── embeddings_cache.npz     # Embeddings pré-calculés (57 MB, versionné)
+│   └── ...                      # Prédictions et métriques (non versionnées)
+│
+└── docs/
+    ├── architecture.md
+    ├── data_dictionary.md
+    └── decisions_log.md
 ```
 
 ---
 
-## Architecture
+## Documentation
 
-Voir [docs/architecture.md](docs/architecture.md) pour le schéma détaillé.
-
-## Dictionnaire des données
-
-Voir [docs/data_dictionary.md](docs/data_dictionary.md) pour la description de chaque colonne.
-
-## Décisions de conception
-
-Voir [docs/decisions_log.md](docs/decisions_log.md) pour les choix architecturaux figés.
+| Document | Contenu |
+|----------|---------|
+| [docs/architecture.md](docs/architecture.md) | Schéma medallion et description des couches |
+| [docs/data_dictionary.md](docs/data_dictionary.md) | Description de chaque colonne de mart_ml |
+| [docs/decisions_log.md](docs/decisions_log.md) | Choix architecturaux figés et leur justification |
