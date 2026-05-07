@@ -1,0 +1,34 @@
+# Secrets
+.env
+
+# dbt
+dbt_project/target/
+dbt_project/logs/
+dbt_project/dbt_packages/
+profiles.yml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (raw CSVs stay local, not in git)
+data/
+
+# Generated results (committed so collaborators get pre-computed outputs)
+# results/embeddings_cache.npz  ← included in git (57MB, saves 15min recompute)
+results/mart_predictions.csv
+results/confusion_matrix_*.csv
+results/evaluation_report.txt
+results/dbt_test_results.txt
+
+# uv lockfile (optional — keep if you want reproducible installs)
+# uv.lock

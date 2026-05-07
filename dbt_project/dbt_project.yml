@@ -1,0 +1,39 @@
+name: 'pfe_spark_triage'
+version: '1.0.0'
+config-version: 2
+
+profile: 'pfe_spark_triage'
+
+model-paths:  ["models"]
+seed-paths:   ["seeds"]
+macro-paths:  ["macros"]
+test-paths:   ["tests"]
+analysis-paths: ["analyses"]
+
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  pfe_spark_triage:
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: table
+      +schema: intermediate
+    marts:
+      ml:
+        +materialized: table
+        +schema: marts_ml
+      analytics:
+        +materialized: table
+        +schema: marts_analytics
+
+seeds:
+  pfe_spark_triage:
+    +schema: seeds
+    +column_types:
+      issuetype_raw: varchar
+      issuetype: varchar
+      resolution_raw: varchar
+      resolution: varchar

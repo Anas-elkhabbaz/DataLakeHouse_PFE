@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: stg_issues
+    description: "Issues JIRA filtrées sur SPARK — couche staging 1:1"
+    columns:
+      - name: key
+        description: "Clé unique JIRA (SPARK-NNNNN)"
+        tests:
+          - unique
+          - not_null
+      - name: issue_id
+        tests:
+          - not_null
+      - name: project
+        tests:
+          - accepted_values:
+              values: ['SPARK']
+      - name: created_at
+        tests:
+          - not_null
+
+  - name: stg_comments
+    description: "Commentaires des issues SPARK"
+    columns:
+      - name: key
+        tests:
+          - not_null
+      - name: comment_id
+        tests:
+          - not_null
+
+  - name: stg_changelog
+    description: "Historique des changements des issues SPARK"
+    columns:
+      - name: key
+        tests:
+          - not_null
+      - name: field
+        tests:
+          - not_null
+
+  - name: stg_issuelinks
+    description: "Liens entre tickets SPARK"
+    columns:
+      - name: key
+        tests:
+          - not_null
+      - name: type_name
+        tests:
+          - not_null

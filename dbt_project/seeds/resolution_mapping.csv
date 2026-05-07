@@ -1,0 +1,16 @@
+resolution_raw,resolution
+Fixed,Fixed
+Done,Fixed
+Resolved,Fixed
+Implemented,Fixed
+Won't Fix,Won't Fix
+Won't Do,Won't Fix
+Later,Won't Fix
+Abandoned,Won't Fix
+Not A Problem,Not A Problem
+Not A Bug,Not A Problem
+Works for Me,Not A Problem
+Incomplete,Incomplete
+Duplicate,Duplicate
+Invalid,Invalid
+Cannot Reproduce,Cannot Reproduce

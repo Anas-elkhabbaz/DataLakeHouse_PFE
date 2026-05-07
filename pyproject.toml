@@ -1,0 +1,18 @@
+[project]
+name = "pfe-spark-triage"
+version = "0.1.0"
+description = "Plateforme de triage automatique des incidents Apache Spark sur Snowflake"
+requires-python = ">=3.11"
+dependencies = [
+    "snowflake-connector-python>=3.6",
+    "pandas>=2.0",
+    "streamlit>=1.35",
+    "plotly>=5.20",
+    "python-dotenv>=1.0",
+    "dbt-snowflake>=1.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ipykernel",
+]

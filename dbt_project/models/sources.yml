@@ -1,0 +1,33 @@
+version: 2
+
+sources:
+  - name: raw
+    database: PFE_SPARK
+    schema: RAW
+    description: "Couche Bronze — données brutes 1:1 avec les CSV Kaggle Apache JIRA"
+    tables:
+      - name: issues
+        description: "18 552 208 lignes × 18 colonnes retenues (toutes les issues JIRA)"
+        columns:
+          - name: key
+            description: "Clé unique JIRA (ex: SPARK-12345)"
+          - name: project_key
+            description: "Clé du projet — filtré sur 'SPARK' en staging"
+
+      - name: comments
+        description: "62 356 265 lignes — commentaires de toutes les issues"
+        columns:
+          - name: key
+            description: "Référence à l'issue parente"
+
+      - name: changelog
+        description: "40 490 946 lignes — historique des changements de champs"
+        columns:
+          - name: key
+            description: "Référence à l'issue parente"
+
+      - name: issuelinks
+        description: "390 068 lignes — liens entre tickets (Duplicate, Blocks, Relates…)"
+        columns:
+          - name: key
+            description: "Issue source du lien"

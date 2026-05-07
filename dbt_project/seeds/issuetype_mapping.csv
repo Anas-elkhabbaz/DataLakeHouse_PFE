@@ -1,0 +1,23 @@
+issuetype_raw,issuetype
+Bug,Bug
+Improvement,Improvement
+Sub-task,Sub-task
+New Feature,New Feature
+Task,Task
+Technical task,Task
+Test,Test
+Documentation,Documentation
+Question,Question
+Umbrella,Other
+Wish,Other
+Story,Other
+Dependency upgrade,Other
+Epic,Other
+Brainstorming,Other
+IT Help,Other
+Request,Other
+Github Integration,Other
+Planned Work,Other
+New JIRA Project,Other
+Blog - New Blog Request,Other
+Spike,Other

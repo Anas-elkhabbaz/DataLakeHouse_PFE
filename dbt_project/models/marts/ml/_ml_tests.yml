@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: mart_ml
+    description: >
+      Table Gold — contrat de données pour le pipeline V6 Hybrid RCA.
+      Contient uniquement les tickets SPARK avec résolution connue,
+      divisés en train (~41 400) et validation (~4 700).
+    columns:
+      - name: key
+        description: "Clé unique JIRA (SPARK-NNNNN)"
+        tests:
+          - unique
+          - not_null
+      - name: split
+        description: "Partition temporelle : train (<2023) ou validation (2023)"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['train', 'validation']
+      - name: issuetype
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Bug', 'Improvement', 'Sub-task', 'New Feature', 'Task', 'Test', 'Documentation', 'Question', 'Other']
+              config:
+                severity: warn
+      - name: resolution
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Fixed', 'Not A Problem', 'Incomplete', 'Duplicate', 'Invalid', 'Cannot Reproduce']
+              config:
+                severity: warn
+      - name: text_noco
+        tests:
+          - not_null
+      - name: created_at
+        tests:
+          - not_null

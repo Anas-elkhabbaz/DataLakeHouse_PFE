@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: mart_analytics_ops
+    description: "Agrégats mensuels par issuetype pour le tableau de bord opérationnel"
+    columns:
+      - name: month
+        tests:
+          - not_null
+      - name: issuetype
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Bug', 'Improvement', 'Sub-task', 'New Feature', 'Task', 'Test', 'Documentation', 'Question', 'Other']
+      - name: total_issues
+        tests:
+          - not_null
+
+  - name: mart_analytics_deps
+    description: "Agrégats assignataires et liens entre tickets"
+    columns:
+      - name: section_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['assignee', 'issue_links']
+      - name: entity_key
+        tests:
+          - not_null
