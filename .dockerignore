@@ -1,0 +1,44 @@
+# Secrets — never bake credentials into an image
+.env
+
+# Version control
+.git/
+.gitignore
+
+# Raw data — too large (GBs), not needed at runtime
+data/
+
+# dbt — runtime pipeline, not needed in Streamlit images
+dbt_project/.venv/
+dbt_project/target/
+dbt_project/logs/
+dbt_project/dbt_packages/
+dbt_project/
+
+# Load scripts — one-time setup, not needed at runtime
+load/
+cortex/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+
+# Result files not needed at runtime (embeddings_cache.npz IS included)
+results/dbt_test_results.txt
+results/mart_predictions.csv
+results/confusion_matrix_issuetype.csv
+results/confusion_matrix_resolution.csv
+results/evaluation_report.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs
+docs/
+README.md
