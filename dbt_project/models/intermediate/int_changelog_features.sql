@@ -30,13 +30,16 @@ priority_ranked AS (
     WHERE UPPER(field) = 'PRIORITY'
 ),
 
--- Détection d'escalade : au moins un changement de priorité croissant
+-- Détection d'escalade/désescalade : changements de priorité consécutifs
 escalation_flags AS (
     SELECT
         p1.key,
         MAX(
             CASE WHEN p2.priority_rank > p1.priority_rank THEN 1 ELSE 0 END
-        ) AS was_escalated
+        ) AS was_escalated,
+        MAX(
+            CASE WHEN p2.priority_rank < p1.priority_rank THEN 1 ELSE 0 END
+        ) AS was_deescalated
     FROM priority_ranked p1
     JOIN priority_ranked p2
         ON p1.key = p2.key
@@ -76,7 +79,8 @@ SELECT
     a.n_assignee_changes,
     a.n_resolution_changes,
     a.n_people_involved,
-    COALESCE(e.was_escalated, 0)    AS was_escalated,
+    COALESCE(e.was_escalated, 0)      AS was_escalated,
+    COALESCE(e.was_deescalated, 0)    AS was_deescalated,
     fa.first_assignee
 FROM aggregated a
 LEFT JOIN escalation_flags e    ON a.key = e.key

@@ -16,17 +16,30 @@ SELECT
     i.description   AS description_clean,
     COALESCE(c.all_comments, '') AS comments_concat,
 
-    -- Représentation NOCO (No Comments) — correspond à ce que reçoit un ticket frais
-    -- Utilisée pour l'embedding de récupération (retrieval)
+    -- Représentation NOCO (No Comments, No Labels) — entrée de l'embedding de récupération
+    -- TYPE retiré : c'est une cible de classification → label leakage si inclus
     LEFT(
         CONCAT(
             'TICKET: ', COALESCE(i.summary, ''), '\n',
-            'TYPE: ', COALESCE(i.issuetype, ''), ' | PRI: ', COALESCE(i.priority, ''), '\n',
+            'PRI: ', COALESCE(i.priority, ''), '\n',
             'STATUS: ', COALESCE(i.status, ''), '\n',
-            'DESC: ', LEFT(COALESCE(i.description, ''), 800)
+            'DESC: ', LEFT(COALESCE(i.description, ''), 1500)
         ),
         2000
     ) AS text_noco,
+
+    -- Représentation RICH (avec commentaires) pour le dual-embedding V6
+    LEFT(
+        CONCAT(
+            'TICKET: ', COALESCE(i.summary, ''), '\n',
+            'PRIORITY: ', COALESCE(i.priority, 'Unknown'), '\n',
+            'STATUS: ', COALESCE(i.status, 'Unknown'), '\n',
+            'N_COMMENTS: ', COALESCE(TO_CHAR(COALESCE(c.n_comments, 0)), '0'), '\n',
+            'DESCRIPTION: ', LEFT(COALESCE(i.description, ''), 2000), '\n',
+            'DISCUSSION: ', LEFT(COALESCE(c.all_comments, ''), 2500)
+        ),
+        6000
+    ) AS text_rich,
 
     -- Métadonnées pour le boost de récupération (§9.4 Step 3)
     i.priority,
@@ -41,6 +54,7 @@ SELECT
     COALESCE(cl.n_assignee_changes,   0) AS n_assignee_changes,
     COALESCE(cl.n_resolution_changes, 0) AS n_resolution_changes,
     COALESCE(cl.was_escalated,        0) AS was_escalated,
+    COALESCE(cl.was_deescalated,      0) AS was_deescalated,
     COALESCE(cl.n_people_involved,    0) AS n_people_involved,
     cl.first_assignee,
 
@@ -65,5 +79,5 @@ LEFT JOIN {{ ref('int_comments_aggregated') }}  c  USING (key)
 LEFT JOIN {{ ref('int_changelog_features') }}   cl USING (key)
 LEFT JOIN {{ ref('int_issuelinks_features') }}  il USING (key)
 
--- On exclut les tickets 2024+ du mart ML (tagués 'excluded' dans int_issues_cleaned)
-WHERE i.split IN ('train', 'validation')
+-- On exclut uniquement les tickets 2024+ (tagués 'excluded') — train/validation/test tous inclus
+WHERE i.split IN ('train', 'validation', 'test')

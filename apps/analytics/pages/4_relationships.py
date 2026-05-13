@@ -21,15 +21,15 @@ st.divider()
 def load_top_duplicated() -> pd.DataFrame:
     return query("""
         SELECT
-            il.key,
-            il.n_duplicates,
+            l.key,
+            l.n_duplicates,
             i.issuetype,
             i.resolution,
             LEFT(i.summary, 80) AS summary_excerpt
-        FROM PFE_SPARK.INTERMEDIATE.INT_ISSUELINKS_FEATURES il
+        FROM PFE_SPARK.MARTS_ANALYTICS.MART_ANALYTICS_LINKS l
         JOIN PFE_SPARK.INTERMEDIATE.INT_ISSUES_CLEANED i USING (key)
-        WHERE il.n_duplicates > 0
-        ORDER BY il.n_duplicates DESC
+        WHERE l.n_duplicates > 0
+        ORDER BY l.n_duplicates DESC
         LIMIT 20
     """)
 
@@ -38,29 +38,33 @@ def load_top_duplicated() -> pd.DataFrame:
 def load_top_blocked() -> pd.DataFrame:
     return query("""
         SELECT
-            il.key,
-            il.n_blocked_by,
+            l.key,
+            l.n_blocked_by,
             i.issuetype,
             i.resolution,
             LEFT(i.summary, 80) AS summary_excerpt
-        FROM PFE_SPARK.INTERMEDIATE.INT_ISSUELINKS_FEATURES il
+        FROM PFE_SPARK.MARTS_ANALYTICS.MART_ANALYTICS_LINKS l
         JOIN PFE_SPARK.INTERMEDIATE.INT_ISSUES_CLEANED i USING (key)
-        WHERE il.n_blocked_by > 0
-        ORDER BY il.n_blocked_by DESC
+        WHERE l.n_blocked_by > 0
+        ORDER BY l.n_blocked_by DESC
         LIMIT 20
     """)
 
 
 @st.cache_data(ttl=3600)
 def load_link_type_dist() -> pd.DataFrame:
+    """Breakdown of link categories from the flat mart (no raw STG dependency)."""
     return query("""
         SELECT
-            t.type_name,
-            COUNT(*) AS n_links
-        FROM PFE_SPARK.STAGING.STG_ISSUELINKS t
-        GROUP BY t.type_name
+            'Duplicate'  AS type_name, SUM(n_duplicates)  AS n_links
+        FROM PFE_SPARK.MARTS_ANALYTICS.MART_ANALYTICS_LINKS
+        UNION ALL
+        SELECT 'Blocks',    SUM(n_blocks)    FROM PFE_SPARK.MARTS_ANALYTICS.MART_ANALYTICS_LINKS
+        UNION ALL
+        SELECT 'Blocked By', SUM(n_blocked_by) FROM PFE_SPARK.MARTS_ANALYTICS.MART_ANALYTICS_LINKS
+        UNION ALL
+        SELECT 'Relates',   SUM(n_relates)   FROM PFE_SPARK.MARTS_ANALYTICS.MART_ANALYTICS_LINKS
         ORDER BY n_links DESC
-        LIMIT 15
     """)
 
 

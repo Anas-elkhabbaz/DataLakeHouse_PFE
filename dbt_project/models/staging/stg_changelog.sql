@@ -1,6 +1,5 @@
--- Staging : changelog filtré sur les issues SPARK et les champs utiles
--- Champs utiles (insensible à la casse) : Status, Priority, Assignee, Resolution,
--- Fix Version, Fix Version/s, Component, Component/s, Labels
+-- Staging : changelog filtré sur les issues SPARK et les champs utiles au pipeline V6
+-- Champs retenus : ceux consommés par int_changelog_features uniquement
 -- Résultat attendu : plusieurs millions de lignes
 
 WITH spark_keys AS (
@@ -10,11 +9,7 @@ WITH spark_keys AS (
 source AS (
     SELECT * FROM {{ source('raw', 'changelog') }}
     WHERE key IN (SELECT key FROM spark_keys)
-      AND UPPER(field) IN (
-          'STATUS', 'PRIORITY', 'ASSIGNEE', 'RESOLUTION',
-          'FIX VERSION', 'FIX VERSION/S',
-          'COMPONENT', 'COMPONENT/S', 'LABELS'
-      )
+      AND UPPER(field) IN ('STATUS', 'PRIORITY', 'RESOLUTION', 'ASSIGNEE', 'ISSUETYPE')
 )
 
 SELECT

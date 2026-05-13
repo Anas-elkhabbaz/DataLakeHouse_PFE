@@ -16,20 +16,24 @@ models:
           - not_null
           - accepted_values:
               values: ['Bug', 'Improvement', 'Sub-task', 'New Feature', 'Task', 'Test', 'Documentation', 'Question', 'Other']
-              config:
-                severity: warn
       - name: resolution
         tests:
           - not_null
           - accepted_values:
-              values: ['Fixed', 'Not A Problem', 'Incomplete', 'Duplicate', 'Invalid', 'Cannot Reproduce']
-              config:
-                severity: warn
+              values: ['Fixed', 'Not A Problem', 'Incomplete', 'Duplicate', 'Invalid', 'Cannot Reproduce', "Won''t Fix"]
       - name: split
         tests:
           - not_null
           - accepted_values:
-              values: ['train', 'validation', 'excluded']
+              values: ['train', 'validation', 'test', 'excluded']
+      - name: resolution_days
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0 AND resolution_days <= 5000"
+      - name: summary_length
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
 
   - name: int_comments_aggregated
     description: "Commentaires agrégés par issue (texte nettoyé, métriques)"
@@ -43,7 +47,7 @@ models:
               field: key
 
   - name: int_changelog_features
-    description: "Features changelog par issue (escalade, changements, assignataire)"
+    description: "Features changelog par issue (escalade, désescalade, changements, assignataire)"
     columns:
       - name: key
         tests:
@@ -52,6 +56,18 @@ models:
           - relationships:
               to: ref('int_issues_cleaned')
               field: key
+      - name: n_status_changes
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: was_escalated
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "IN (0, 1)"
+      - name: was_deescalated
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "IN (0, 1)"
 
   - name: int_issuelinks_features
     description: "Features de liens entre tickets par issue"

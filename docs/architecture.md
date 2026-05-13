@@ -1,12 +1,12 @@
-# Architecture de la plateforme — PFE Spark Triage
+# Architecture de la plateforme — PFE Spark Triage (V6 Hybrid RCA)
 
 ## Vue d'ensemble
 
 La plateforme adopte une **architecture en médaillon** (Bronze → Argent → Or) hébergée sur
 Snowflake, orchestrée par dbt-snowflake, et exposée via deux applications Streamlit conteneurisées
-avec Docker. Le pipeline d'inférence utilise des embeddings de phrases locaux (sentence-transformers)
-en raison des restrictions du compte Snowflake trial — les scripts Cortex SQL sont fournis pour
-déploiement sur un compte payant.
+avec Docker. Le pipeline d'inférence implémente l'architecture **V6 Hybrid RCA** : embeddings
+duaux (NOCO + RICH), fusion Reciprocal Rank Fusion (RRF), ré-ranking changelog, gate de
+confiance, et arbitrage LLM optionnel (Ollama ou Anthropic).
 
 ---
 
@@ -34,50 +34,73 @@ Fichiers CSV source (Kaggle, mars 2025)
 │       │                                                                           │
 │       ▼  dbt run — intermediate/ (tables)                                         │
 │  ARGENT — INTERMEDIATE                                                            │
-│  INT_ISSUES_CLEANED  (45 043) — NLP 6 étapes, mapping labels, split temporel    │
-│  INT_COMMENTS_AGGREGATED (41 986) — LISTAGG, nettoyage, métriques               │
-│  INT_CHANGELOG_FEATURES  (29 937) — escalade, transitions, n_people             │
-│  INT_ISSUELINKS_FEATURES (11 179) — doublons, blocages, relations               │
+│  INT_ISSUES_CLEANED  (45 043) — NLP 6 étapes, mapping labels, split 3-way        │
+│  INT_COMMENTS_AGGREGATED (41 986) — first-5+last-3 strategy, 400 chars/comment   │
+│  INT_CHANGELOG_FEATURES  (29 937) — escalade, déescalade, transitions, n_people  │
+│  INT_ISSUELINKS_FEATURES (11 179) — doublons, blocages, relations                │
 │       │                                                                           │
 │       ▼  dbt run — marts/ (tables)                                                │
 │  OR                                                                               │
 │  MARTS_ML.MART_ML (42 083)  ──────────────────────────────────────┐             │
 │  MARTS_ANALYTICS.MART_ANALYTICS_OPS (1 352 lignes mois×type)      │             │
-│  MARTS_ANALYTICS.MART_ANALYTICS_DEPS (13 968 lignes assignataire)  │             │
+│  MARTS_ANALYTICS.MART_ANALYTICS_WORKLOAD (flat assignataires)      │             │
+│  MARTS_ANALYTICS.MART_ANALYTICS_LINKS (flat liens)                 │             │
 └────────────────────────────────────────────────────────────────────┼─────────────┘
-        │                                    │                       │
-        ▼ Chemin 2                           ▼ Chemin 1              │
-  Dashboard analytique               Pipeline ML (Python)            │
-        │                            python load/run_ml_pipeline.py  │
-        │                                    │                       │
-        │              ┌─────────────────────┘                       │
-        │              │  1. Fetch MART_ML depuis Snowflake           │
-        │              │  2. Embed text_noco                          │
-        │              │     → all-MiniLM-L6-v2 (384d)               │
-        │              │     → results/embeddings_cache.npz (57 MB)  │
-        │              │  3. Cosine KNN (k=15) + metadata boost       │
-        │              │  4. Vote pondéré → prédictions               │
-        │              │  5. Évaluation + export résultats            │
-        │              │  6. Upload → CORTEX.MART_PREDICTIONS (3 809) │
-        │              │                                              │
-        ▼              ▼                                              │
-┌─────────────────┐  ┌──────────────────────────────────────────┐   │
-│  analytics_app  │  │  inference_app                            │   │
-│  5 pages        │  │  KNN temps réel sur 1 ticket             │   │
-│  plotly.express │  │  → issuetype + résolution + analyse      │   │
-│  port 8502      │  │  → optionnel : LLM via Anthropic API     │   │
-└─────────────────┘  │  port 8501                               │   │
-        │             └──────────────────────────────────────────┘   │
-        │                           │                                 │
-        ▼                           ▼                                 │
-┌──────────────────────────────────────────────────────────────────┐ │
-│  Docker                                                           │ │
-│  docker-compose up --build                                        │ │
-│  spark-analytics (python:3.12-slim, port 8502)                   │ │
-│  spark-inference (python:3.12-slim + modèle pré-chargé, 8501)   │ │
-└──────────────────────────────────────────────────────────────────┘ │
-                                                                      │
-              [cortex/*.sql — pour compte Snowflake payant] ──────────┘
+        │                                    │
+        ▼ Chemin 2                           ▼ Chemin 1
+  Dashboard analytique               Pipeline ML Python (V6 Hybrid RCA)
+        │                            python load/run_ml_pipeline.py --phase tune
+        │
+        │              ┌──────────────────────────────────────────────────────────┐
+        │              │  V6 Hybrid RCA — load/run_ml_pipeline.py                 │
+        │              │                                                           │
+        │              │  1. Fetch MART_ML depuis Snowflake                        │
+        │              │  2. Embeddings duaux (BAAI/bge-large-en-v1.5, 1024d)    │
+        │              │     · text_noco → embeddings_noco.npz                    │
+        │              │     · text_rich → embeddings_rich.npz                    │
+        │              │  3. Par ticket query :                                    │
+        │              │     ┌─────────────────────────────────────────────┐      │
+        │              │     │ query_emb_noco  ──────────────────────┐     │      │
+        │              │     │ query_emb_rich  ──────────────────────┤     │      │
+        │              │     │                                        ▼     │      │
+        │              │     │          RRF (k=60, top-30)                  │      │
+        │              │     │                 │                            │      │
+        │              │     │                 ▼                            │      │
+        │              │     │    Metadata boost (priority/status/reporter) │      │
+        │              │     │    + Changelog re-rank (L2 standardisé)     │      │
+        │              │     │                 │                            │      │
+        │              │     │                 ▼ top-15 voisins             │      │
+        │              │     │    Vote pondéré → issuetype + résolution     │      │
+        │              │     │                 │                            │      │
+        │              │     │          l0_conf ≥ 0.65 AND margin ≥ 0.10? │      │
+        │              │     │           ┌─────┴─────┐                     │      │
+        │              │     │           ▼           ▼                     │      │
+        │              │     │        DIRECT    LLM_REQUIRED               │      │
+        │              │     │           │           │                     │      │
+        │              │     │           │      Anthropic/Ollama           │      │
+        │              │     │           │      arbitrage contraint        │      │
+        │              │     │           │      rapidfuzz normalization    │      │
+        │              │     └───────────┴───────────────────────────────┘       │
+        │              │                                                           │
+        │              │  4. Évaluation : accuracy + macro-F1 + CI bootstrap      │
+        │              │  5. Confusion matrices → results/confusion_*.png         │
+        │              │  6. Upload → CORTEX.MART_PREDICTIONS                     │
+        │              │     (routing_issuetype, l0_conf, margin colonnes)        │
+        │              └──────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────┐  ┌──────────────────────────────────────────┐
+│  analytics_app  │  │  inference_app                            │
+│  5 pages        │  │  V6 temps réel sur 1 ticket              │
+│  plotly.express │  │  · validation input (≥10 / ≥20 chars)   │
+│  @cache_data    │  │  · dual embed → RRF → changelog sim      │
+│  port 8502      │  │  · routing badge (DIRECT / LLM_REQUIRED) │
+│                 │  │  · l0_conf + margin métriques            │
+│  Page 5 :       │  │  · top-5 similar + fix_summary           │
+│  Anomalies      │  │  · latency metric (ms)                   │
+│  changelog      │  │  · LLM analysis (Anthropic/Ollama)       │
+└─────────────────┘  │  port 8501                               │
+                     └──────────────────────────────────────────┘
 ```
 
 ---
@@ -89,7 +112,7 @@ Fichiers CSV source (Kaggle, mars 2025)
 - Tables entièrement en VARCHAR pour absorber toute variation de format CSV
 - Chargement via `COPY INTO` avec mapping positionnel `$N` documenté dans `load/04_copy_into_raw.sql`
 - Script `inspect_headers.py` affiche les en-têtes réels pour vérifier le mapping avant chargement
-- `run_phase4.py` exécute le COPY INTO et vérifie les comptes attendus
+- `run_phase4.py` exécute le COPY INTO et vérifie les comptes attendus (≥ seuils minimum)
 
 **Comptes réels chargés :**
 
@@ -112,7 +135,8 @@ Transformations mécaniques uniquement, sans logique métier :
 - Filtre `project_key = 'SPARK'` (STG_ISSUES)
 - Renommage des colonnes (ex. `issuetype_name` → `issuetype_raw`)
 - Cast des horodatages en `TIMESTAMP_TZ` via `TRY_TO_TIMESTAMP_TZ`
-- `QUALIFY ROW_NUMBER() OVER (PARTITION BY key ORDER BY id) = 1` pour dédupliquer 4 clés en double dans la source
+- `QUALIFY ROW_NUMBER() OVER (PARTITION BY key ORDER BY id) = 1` pour dédupliquer 4 clés en double
+- Filtre `stg_changelog` : uniquement les champs `('STATUS', 'PRIORITY', 'RESOLUTION', 'ASSIGNEE', 'ISSUETYPE')`
 
 ### Intermediate — tables dbt
 
@@ -123,16 +147,23 @@ Logique métier et feature engineering :
   HTML, blocs `{code}`, blocs `{noformat}`, mentions `[~user]`, URLs, espaces multiples
 - Consolidation des labels : LEFT JOIN avec `seeds/issuetype_mapping.csv` (9 classes)
   et `seeds/resolution_mapping.csv` (7 classes) — les valeurs absentes du seed donnent NULL → filtrées
-- Split temporel : `train` (<2023-01-01) / `validation` (2023) / `excluded` (≥2024)
+- Split temporel 3-way :
+  - `train` : créé avant 2022-01-01
+  - `validation` : 2022-01-01 ≤ créé < 2023-01-01
+  - `test` : 2023-01-01 ≤ créé < 2024-01-01
+  - `excluded` : ≥ 2024-01-01
 - `resolution_days` DATEDIFF plafonné à 5000
 
 **INT_COMMENTS_AGGREGATED (41 986 lignes)**
-- Nettoyage du corps de chaque commentaire (même macro NLP)
-- Filtre : commentaires de longueur < 10 caractères supprimés
-- LISTAGG par ticket (ORDER BY created_at), tronqué à 3 000 caractères
+- Stratégie first-5 + last-3 : premiers 5 commentaires chronologiques + derniers 3 (si > 5 total)
+- Chaque snippet tronqué à 400 caractères
+- LISTAGG avec séparateur ` || ` (ORDER BY created_at)
+- `n_comments` : nombre total de commentaires ; `n_commenters` : auteurs distincts
 
 **INT_CHANGELOG_FEATURES (29 937 lignes)**
-- Features d'escalade : `was_escalated` (1 si priorité a augmenté)
+- Features d'escalade :
+  - `was_escalated` : 1 si priorité a augmenté au moins une fois (Minor → Major, etc.)
+  - `was_deescalated` : 1 si priorité a diminué au moins une fois
 - Compteurs : n_total_changes, n_status_changes, n_priority_changes, n_assignee_changes
 - `n_people_involved` : nombre d'auteurs distincts dans le changelog
 
@@ -146,76 +177,98 @@ Logique métier et feature engineering :
 ### MARTS_ML.MART_ML — 42 083 lignes
 
 Table de contrat pour le pipeline d'inférence. Jointure large des 4 tables intermédiaires.
-Filtrée sur `split IN ('train', 'validation')` — les tickets 2024+ sont exclus.
+Filtrée sur `split IN ('train', 'validation', 'test')` — les tickets 2024+ sont exclus.
 
 | Partition | Lignes |
 |-----------|--------|
-| train | 38 274 |
-| validation | 3 809 |
+| train | ~38 274 |
+| validation | ~3 809 |
+| test | ~3 700 |
 | Total | 42 083 |
 
-Colonne clé : `text_noco` — représentation structurée du ticket sans commentaires :
+**Colonnes texte pour l'embedding dual :**
+
+`text_noco` — sans commentaires, sans labels de classification :
 ```
 TICKET: {summary}
-TYPE: {issuetype} | PRI: {priority}
+PRI: {priority}
 STATUS: {status}
-DESC: {description[:800]}
+DESC: {description[:1500]}
 ```
-Tronquée à 2000 caractères. Sert de base à l'embedding de récupération.
+Tronquée à 2000 caractères. Sert à l'embedding de récupération et au corpus BM25.
+
+`text_rich` — avec commentaires, sans labels de classification :
+```
+TICKET: {summary}
+PRIORITY: {priority}
+STATUS: {status}
+N_COMMENTS: {n_comments}
+DESCRIPTION: {description[:2000]}
+DISCUSSION: {all_comments[:2500]}
+```
+Tronquée à 6000 caractères. Capture le contexte de discussion pour l'embedding sémantique.
 
 ### MARTS_ANALYTICS
 
 - **MART_ANALYTICS_OPS** (1 352 lignes) : agrégats mensuels × issuetype
-  (total_issues, total_resolved, median_resolution_days, pct_fixed, pct_wontfix, ...)
-- **MART_ANALYTICS_DEPS** (13 968 lignes) : métriques par assignataire + agrégats de liens
+- **MART_ANALYTICS_WORKLOAD** : métriques par assignataire (n_assigned, n_fixed, avg_resolution_days, top_issuetype)
+- **MART_ANALYTICS_LINKS** : métriques par ticket (n_duplicates, n_blocks, n_blocked_by, n_relates)
 
 ---
 
-## Pipeline d'inférence — Python KNN
-
-Le pipeline Snowflake Cortex (`cortex/*.sql`) est fourni comme implémentation de référence
-mais requiert un compte Snowflake payant. L'implémentation effective utilise Python :
+## Pipeline d'inférence — V6 Hybrid RCA
 
 ### Modèle d'embedding
 
 | Propriété | Valeur |
 |-----------|--------|
-| Modèle | `all-MiniLM-L6-v2` (sentence-transformers) |
-| Dimensions | 384 |
-| Encodage | L2-normalisé → similarité cosinus = produit scalaire |
-| Cache | `results/embeddings_cache.npz` (57 MB, versionné dans git) |
+| Modèle | `BAAI/bge-large-en-v1.5` (sentence-transformers) |
+| Dimensions | 1024 |
+| Préfixe query | `"Represent this sentence for searching relevant passages: "` |
+| Documents | Encodés sans préfixe |
+| Normalisation | L2-normalisée → similarité cosinus = produit scalaire |
+| Cache NOCO | `results/embeddings_noco.npz` |
+| Cache RICH | `results/embeddings_rich.npz` |
 
-### Algorithme de prédiction
+### Algorithme de prédiction (par ticket query)
 
-1. Embed le ticket d'entrée (text_noco, LEFT 2000 chars)
-2. Produit scalaire contre les 38 274 embeddings d'entraînement
-3. Boost de métadonnées : +0,10 si même priorité, +0,08 si même statut, +0,05 si même reporter
-4. Garder les 15 plus proches voisins (k=15)
-5. Vote pondéré par score de similarité → prédiction + confiance
+1. Encoder `QUERY_PREFIX + text_noco` → `q_noco` (1024d)
+2. Encoder `QUERY_PREFIX + text_rich` → `q_rich` (1024d)
+3. Cosine scores NOCO : `s_noco = train_emb_noco @ q_noco` (n_train valeurs)
+4. Cosine scores RICH : `s_rich = train_emb_rich @ q_rich`
+5. **RRF (k=60)** : fusionner les listes de rang → top-30 candidats
+6. **Metadata boost** sur les top-30 : +0.10 si même priorité, +0.08 si même statut, +0.05 si même reporter
+7. **Changelog re-rank** : similarité L2 inverse dans l'espace changelog standardisé
+8. Score final = 1.0×RRF + 0.15×meta_boost + 0.10×changelog_sim
+9. Garder les 15 meilleures (k=15)
+10. Vote pondéré → issuetype + résolution + l0_conf + margin
+11. **Gate de confiance** : DIRECT si l0_conf ≥ 0.65 ET margin ≥ 0.10, sinon LLM_REQUIRED
+12. Si LLM_REQUIRED : envoyer au LLM (Anthropic haiku / Ollama mistral) avec liste de labels contrainte
 
-### Résultats sur le jeu de validation (3 809 tickets)
+### Module partagé `load/retrieval.py`
 
-| Cible | Accuracy | Macro-F1 |
-|-------|----------|----------|
-| issuetype | **75,32 %** | 33,77 % |
-| résolution | **91,52 %** | 16,40 % |
+Ce module est importé à la fois par `run_ml_pipeline.py` (batch) et `inference_app.py` (temps réel),
+garantissant la cohérence exacte entre les deux chemins.
 
-F1 par classe (issuetype) :
+Fonctions exportées :
+- `rrf_fuse(scores_noco, scores_rich, k=60, top_k=30)` → (indices, rrf_scores)
+- `metadata_boost(...)` → boost array
+- `build_scaler(train_df)` → StandardScaler ajusté sur les changelog features
+- `changelog_sim(q_cl, cand_cl)` → 1/(1+L2) similarity
+- `fuse_scores(rrf, meta, cl, alpha=1.0, beta=0.15, gamma=0.10)` → final scores
+- `weighted_vote(labels, weights)` → (best_label, l0_conf, margin, scores_dict)
+- `route(l0_conf, margin)` → "DIRECT" | "LLM_REQUIRED"
 
-| Classe | F1 |
-|--------|----|
-| Bug | 0,703 |
-| Improvement | 0,769 |
-| Sub-task | 0,885 |
-| New Feature | 0,190 |
-| Documentation | 0,200 |
-| Test | 0,208 |
-| Task | 0,051 |
-| Other | 0,035 |
-| Question | 0,000 |
+### LLM Layer (`cortex/`)
 
-> Le macro-F1 bas reflète le déséquilibre des classes : Bug + Improvement + Sub-task
-> représentent ~75 % du dataset. Les classes rares ont peu de représentants en validation.
+| Module | Rôle |
+|--------|------|
+| `llm_client.py` | Adapter backend-agnostic : Anthropic si API key présente, sinon Ollama |
+| `arbitration.py` | Arbitrage contraint sur liste de labels valides, normalisation rapidfuzz |
+| `fix_summary.py` | Résumé de correction lazy, cache JSON dans `results/fix_summaries.json` |
+
+Si `LLMUnavailableError` est levé, les prédictions LLM_REQUIRED restent à la prédiction
+KNN directe et sont signalées avec un badge rouge dans l'UI.
 
 ---
 
@@ -225,13 +278,14 @@ F1 par classe (issuetype) :
 |--------|-------|---------|
 | Sources | not_null sur les 4 tables | PASS |
 | Staging | unique/not_null keys, accepted_values project='SPARK' | PASS |
-| Intermediate | unique/not_null keys, accepted_values labels, relationships FK | PASS + 2 WARN |
-| Marts | unique/not_null keys, accepted_values split/issuetype | PASS |
-| **Total** | **46 tests** | **PASS=44 WARN=2 ERROR=0** |
+| Intermediate | unique/not_null, accepted_values labels + splits, range tests, FK | PASS |
+| Marts ML | unique/not_null, accepted_values issuetype/resolution/split | PASS |
+| Marts Analytics | unique sur assignee (workload) et key (links) | PASS |
+| **Total** | **55 tests** | **PASS=55 WARN=0 ERROR=0** |
 
-Les 2 WARN concernent les valeurs "Won't Fix" : l'apostrophe ne peut pas être placée dans
-un test `accepted_values` SQL sans erreur de syntaxe. Le label est néanmoins présent et
-correctement géré dans le pipeline.
+Tests dbt-utils utilisés :
+- `dbt_utils.expression_is_true` : range tests sur resolution_days, was_escalated, was_deescalated
+- `accepted_values` : validation de toutes les classes consolidées (y compris "Won''t Fix" avec apostrophe correctement échappée)
 
 ---
 
@@ -241,13 +295,10 @@ correctement géré dans le pipeline.
 docker-compose up --build
 ```
 
-| Service | Port | Image de base | Taille approx. |
-|---------|------|---------------|----------------|
-| spark-inference | 8501 | python:3.12-slim | ~1,1 GB |
-| spark-analytics | 8502 | python:3.12-slim | ~400 MB |
-
-L'image d'inférence pré-charge le modèle `all-MiniLM-L6-v2` et copie
-`results/embeddings_cache.npz` — le démarrage du container est instantané.
+| Service | Port | Image de base | Particularité |
+|---------|------|---------------|---------------|
+| spark-inference | 8501 | python:3.12-slim | Pré-charge BAAI/bge-large-en-v1.5, copie embeddings_noco.npz + embeddings_rich.npz |
+| spark-analytics | 8502 | python:3.12-slim | Image légère, pas de modèle ML |
 
 ---
 

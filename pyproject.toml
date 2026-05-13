@@ -10,6 +10,17 @@ dependencies = [
     "plotly>=5.20",
     "python-dotenv>=1.0",
     "dbt-snowflake>=1.8",
+    # ML pipeline
+    "sentence-transformers>=3.0",
+    "scikit-learn>=1.4",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "rapidfuzz>=3.0",
+    "rank_bm25>=0.2.2",
+    # LLM adapters
+    "anthropic>=0.40",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]

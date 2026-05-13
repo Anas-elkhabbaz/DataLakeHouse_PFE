@@ -7,8 +7,8 @@
 Table Gold de référence pour le pipeline d'inférence.
 
 **Granularité :** un ticket Apache Spark JIRA par ligne  
-**Lignes réelles :** 42 083 (38 274 train + 3 809 validation)  
-**Filtre :** `split IN ('train', 'validation')` — les tickets 2024+ (excluded) sont absents
+**Lignes réelles :** 42 083 (train + validation + test)  
+**Filtre :** `split IN ('train', 'validation', 'test')` — les tickets 2024+ (excluded) sont absents
 
 ### Identification et partitionnement
 
@@ -16,7 +16,7 @@ Table Gold de référence pour le pipeline d'inférence.
 |---------|------|-------------|
 | `key` | VARCHAR | Clé unique du ticket JIRA (ex. SPARK-12345). Clé primaire. |
 | `created_at` | TIMESTAMP_TZ | Date et heure de création du ticket. |
-| `split` | VARCHAR | Partition temporelle : `train` (avant 2023) ou `validation` (2023). |
+| `split` | VARCHAR | Partition temporelle : `train` (<2022), `validation` (2022), `test` (2023). |
 
 ### Cibles de classification
 
@@ -31,20 +31,31 @@ Table Gold de référence pour le pipeline d'inférence.
 |---------|------|-------------|
 | `summary_clean` | VARCHAR | Résumé après nettoyage NLP 6 étapes (HTML, JIRA markup, URLs, espaces). |
 | `description_clean` | VARCHAR | Description complète nettoyée. Chaîne vide si absente (~2,4 % des tickets). |
-| `comments_concat` | VARCHAR | Commentaires agrégés chronologiquement, tronqués à 3 000 caractères. Chaîne vide si aucun commentaire. |
+| `comments_concat` | VARCHAR | Commentaires agrégés : first-5 chronologiques + last-3, chaque snippet tronqué à 400 chars, séparateur ` || `. |
 
-### Représentation textuelles pour l'inférence
+### Représentations textuelles pour l'inférence (dual embedding)
 
 | Colonne | Type | Description |
 |---------|------|-------------|
-| `text_noco` | VARCHAR | Représentation structurée sans commentaires (format TICKET/TYPE/STATUS/DESC), tronquée à 2 000 caractères. Utilisée comme entrée de l'embedding de récupération. |
+| `text_noco` | VARCHAR | Représentation structurée **sans commentaires et sans labels** (format TICKET/PRI/STATUS/DESC), tronquée à 2 000 caractères. Utilisée pour l'embedding NOCO et le corpus BM25. |
+| `text_rich` | VARCHAR | Représentation structurée **avec commentaires** (format TICKET/PRIORITY/STATUS/N_COMMENTS/DESCRIPTION/DISCUSSION), tronquée à 6 000 caractères. Utilisée pour l'embedding RICH. |
 
-Format exact de `text_noco` :
+Format exact de `text_noco` (sans leakage de label) :
 ```
 TICKET: {summary_clean}
-TYPE: {issuetype} | PRI: {priority}
+PRI: {priority}
 STATUS: {status}
-DESC: {description_clean[:800]}
+DESC: {description_clean[:1500]}
+```
+
+Format exact de `text_rich` :
+```
+TICKET: {summary_clean}
+PRIORITY: {priority}
+STATUS: {status}
+N_COMMENTS: {n_comments}
+DESCRIPTION: {description_clean[:2000]}
+DISCUSSION: {all_comments[:2500]}
 ```
 
 ### Métadonnées pour le boost de récupération
@@ -59,7 +70,8 @@ DESC: {description_clean[:800]}
 ### Features changelog (contribution originale du PFE)
 
 Ces features sont absentes des travaux antérieurs sur ce dataset et constituent
-la contribution technique distinctive du projet.
+la contribution technique distinctive du projet. Elles servent au ré-ranking des candidats
+RRF (score L2 inverse dans l'espace standardisé).
 
 | Colonne | Type | Description |
 |---------|------|-------------|
@@ -69,6 +81,7 @@ la contribution technique distinctive du projet.
 | `n_assignee_changes` | NUMBER | Nombre de réassignations. Indicateur de complexité. |
 | `n_resolution_changes` | NUMBER | Nombre de changements de résolution (réouvertures incluses). |
 | `was_escalated` | NUMBER (0/1) | 1 si la priorité a augmenté au moins une fois (ex. Minor → Major). |
+| `was_deescalated` | NUMBER (0/1) | 1 si la priorité a diminué au moins une fois (ex. Major → Minor). |
 | `n_people_involved` | NUMBER | Nombre d'auteurs distincts dans le changelog. |
 | `first_assignee` | VARCHAR | Premier assignataire selon le changelog. NULL si aucun événement. |
 
@@ -101,29 +114,25 @@ la contribution technique distinctive du projet.
 
 ## CORTEX.MART_PREDICTIONS
 
-Résultats de l'évaluation du pipeline sur le jeu de validation.
+Résultats de l'évaluation du pipeline sur le jeu sélectionné (validation ou test).
 
-**Lignes :** 3 809 (un ticket de validation par ligne)  
-**Peuplé par :** `python load/run_ml_pipeline.py`
+**Lignes :** ~3 809 (validation) ou ~3 700 (test)  
+**Peuplé par :** `python load/run_ml_pipeline.py --phase tune|final`
 
 | Colonne | Type | Description |
 |---------|------|-------------|
-| `key` | VARCHAR | Clé du ticket de validation (SPARK-NNNNN). |
+| `key` | VARCHAR | Clé du ticket (SPARK-NNNNN). |
 | `true_issuetype` | VARCHAR | Label réel issuetype (ground truth). |
 | `true_resolution` | VARCHAR | Label réel résolution (ground truth). |
-| `pred_issuetype` | VARCHAR | Issuetype prédit par le pipeline KNN. |
+| `pred_issuetype` | VARCHAR | Issuetype prédit par le pipeline V6. |
 | `pred_resolution` | VARCHAR | Résolution prédite. |
-| `conf_issuetype` | FLOAT | Confiance du vote pondéré pour issuetype (0–1). |
-| `conf_resolution` | FLOAT | Confiance du vote pondéré pour résolution (0–1). |
-| `method` | VARCHAR | Toujours `DIRECT` dans l'implémentation Python (vote pondéré). |
-| `fix_summary` | VARCHAR | Vide dans l'implémentation Python (réservé pour l'implémentation Cortex). |
-
-### Métriques d'évaluation (calculées sur MART_PREDICTIONS)
-
-| Cible | Accuracy | Macro-F1 |
-|-------|----------|----------|
-| issuetype | **75,32 %** | 33,77 % |
-| résolution | **91,52 %** | 16,40 % |
+| `conf_issuetype` | FLOAT | l0_conf du vote issuetype (0–1). |
+| `conf_resolution` | FLOAT | l0_conf du vote résolution (0–1). |
+| `routing_issuetype` | VARCHAR | "DIRECT" ou "LLM_REQUIRED" pour l'issuetype. |
+| `margin_issuetype` | FLOAT | Margin du vote issuetype. |
+| `routing_resolution` | VARCHAR | "DIRECT" ou "LLM_REQUIRED" pour la résolution. |
+| `margin_resolution` | FLOAT | Margin du vote résolution. |
+| `fix_summary` | VARCHAR | Résumé de correction généré par LLM (vide si LLM non disponible). |
 
 ---
 
@@ -152,42 +161,90 @@ Agrégats pour la page "Vue d'ensemble" et "Dynamique de résolution" du tableau
 
 ---
 
-## MARTS_ANALYTICS.MART_ANALYTICS_DEPS
+## MARTS_ANALYTICS.MART_ANALYTICS_WORKLOAD
 
-Agrégats pour les pages "Charge de travail" et "Relations" du tableau de bord.
+Métriques par assignataire pour la page "Charge de travail".  
+Remplace l'ancien `mart_analytics_deps` (supprimé).
 
-**Granularité :** entité (assignataire ou ticket) × type de section  
-**Lignes :** 13 968
+**Granularité :** un assignataire par ligne  
+**Source :** `int_issues_cleaned`  
+**Filtre :** assignee IS NOT NULL AND assignee != 'Unassigned'
 
 | Colonne | Type | Description |
 |---------|------|-------------|
-| `section_type` | VARCHAR | `assignee` ou `issue_links`. |
-| `entity_key` | VARCHAR | Identifiant de l'assignataire ou clé du ticket. |
-| `n_assigned` | NUMBER | Nombre de tickets assignés (section assignee). |
-| `n_fixed` | NUMBER | Nombre de tickets résolus en Fixed. |
-| `avg_resolution_days` | FLOAT | Délai moyen de résolution. |
-| `top_issuetype` | VARCHAR | Type d'incident le plus fréquent pour cet assignataire. |
-| `n_links` | NUMBER | Nombre total de liens (section issue_links). |
+| `assignee` | VARCHAR | Identifiant de l'assignataire. Clé primaire. |
+| `n_assigned` | NUMBER | Nombre total de tickets assignés. |
+| `n_fixed` | NUMBER | Nombre de tickets résolus en "Fixed". |
+| `avg_resolution_days` | FLOAT | Délai moyen de résolution (tickets résolus uniquement). |
+| `top_issuetype` | VARCHAR | Type d'incident le plus fréquent pour cet assignataire (MODE). |
+| `n_distinct_issuetypes` | NUMBER | Nombre de types distincts gérés. |
+
+---
+
+## MARTS_ANALYTICS.MART_ANALYTICS_LINKS
+
+Métriques par ticket pour les liens entre tickets, page "Relations".  
+Remplace l'ancien `mart_analytics_deps` (supprimé).
+
+**Granularité :** un ticket par ligne  
+**Source :** `int_issuelinks_features`  
+**Filtre :** `n_links_total > 0`
+
+| Colonne | Type | Description |
+|---------|------|-------------|
+| `key` | VARCHAR | Clé du ticket JIRA. Clé primaire. |
+| `n_links_total` | NUMBER | Nombre total de liens (toutes directions). |
+| `n_duplicates` | NUMBER | Liens de type "Duplicate". |
+| `n_blocks` | NUMBER | Tickets bloqués par ce ticket. |
+| `n_blocked_by` | NUMBER | Tickets qui bloquent ce ticket. |
+| `n_relates` | NUMBER | Liens de type "Relates". |
+| `n_outgoing_plus_incoming` | NUMBER | n_duplicates + n_blocks + n_blocked_by (liens directs). |
 
 ---
 
 ## Fichiers locaux (non dans Snowflake)
 
-### results/embeddings_cache.npz
+### results/embeddings_noco.npz
 
-Cache NumPy des embeddings d'entraînement.
+Cache NumPy des embeddings d'entraînement sur le texte sans commentaires.
 
 | Propriété | Valeur |
 |-----------|--------|
 | Clé dans le fichier | `train_emb` |
-| Shape | (38 274, 384) |
+| Shape | (~38 274, 1024) |
 | Dtype | float32 |
 | Normalisation | L2 (vecteurs unitaires) |
-| Taille sur disque | 57 MB |
-| Modèle source | all-MiniLM-L6-v2 (sentence-transformers) |
+| Modèle source | BAAI/bge-large-en-v1.5 |
 
-Chargé par `apps/inference/inference_app.py` et `load/run_ml_pipeline.py`.
-Si absent, recalculé automatiquement (~10 min).
+### results/embeddings_rich.npz
+
+Cache NumPy des embeddings d'entraînement sur le texte avec commentaires.
+
+| Propriété | Valeur |
+|-----------|--------|
+| Clé dans le fichier | `train_emb` |
+| Shape | (~38 274, 1024) |
+| Dtype | float32 |
+| Normalisation | L2 (vecteurs unitaires) |
+| Modèle source | BAAI/bge-large-en-v1.5 |
+
+### results/embeddings_meta.json
+
+Métadonnées des caches d'embeddings pour validation de cohérence.
+
+| Champ | Description |
+|-------|-------------|
+| `model` | Nom du modèle d'embedding |
+| `dim` | Dimension des vecteurs |
+| `n_train` | Nombre de tickets d'entraînement |
+| `sha256_noco` | SHA256 de la colonne text_noco du corpus d'entraînement |
+| `sha256_rich` | SHA256 de la colonne text_rich du corpus d'entraînement |
+| `computed_at` | Horodatage ISO 8601 du calcul |
+
+### results/fix_summaries.json
+
+Cache des résumés de correction générés par LLM. Clés : clés JIRA (SPARK-NNNNN).
+Chaque entrée : `{"summary": "...", "generated_at": "..."}`.
 
 ### Seeds dbt
 

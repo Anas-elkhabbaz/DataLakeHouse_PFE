@@ -12,13 +12,18 @@ COPY apps/inference/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the embedding model so the container starts instantly
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-large-en-v1.5')"
 
-# Copy application code
+# Copy application code + shared retrieval module
 COPY apps/inference/ ./apps/inference/
+COPY load/retrieval.py ./load/retrieval.py
+COPY cortex/ ./cortex/
 
-# Copy pre-computed embeddings (57 MB — avoids 15-min recompute on first start)
-COPY results/embeddings_cache.npz ./results/embeddings_cache.npz
+# Copy pre-computed dual embeddings + fix_summaries cache
+COPY results/embeddings_noco.npz ./results/embeddings_noco.npz
+COPY results/embeddings_rich.npz ./results/embeddings_rich.npz
+COPY results/embeddings_meta.json ./results/embeddings_meta.json
+COPY results/fix_summaries.json ./results/fix_summaries.json 2>/dev/null || true
 
 EXPOSE 8501
 

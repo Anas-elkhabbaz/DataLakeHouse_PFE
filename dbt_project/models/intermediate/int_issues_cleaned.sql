@@ -37,10 +37,11 @@ with_labels AS (
         ) AS resolution_days,
         LENGTH(COALESCE(b.summary, ''))     AS summary_length,
         LENGTH(COALESCE(b.description, '')) AS description_length,
-        -- Split temporel §5.3
+        -- Split temporel V6 : train (avt 2022) / validation (2022, réglage) / test (2023, évaluation finale)
         CASE
-            WHEN b.created_at < '2023-01-01' THEN 'train'
-            WHEN b.created_at >= '2023-01-01' AND b.created_at < '2024-01-01' THEN 'validation'
+            WHEN b.created_at < '2022-01-01' THEN 'train'
+            WHEN b.created_at >= '2022-01-01' AND b.created_at < '2023-01-01' THEN 'validation'
+            WHEN b.created_at >= '2023-01-01' AND b.created_at < '2024-01-01' THEN 'test'
             ELSE 'excluded'
         END AS split
 

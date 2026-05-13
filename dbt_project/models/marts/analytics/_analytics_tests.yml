@@ -16,14 +16,27 @@ models:
         tests:
           - not_null
 
-  - name: mart_analytics_deps
-    description: "Agrégats assignataires et liens entre tickets"
+  - name: mart_analytics_workload
+    description: "Charge de travail par assignataire (colonnes plates — remplace mart_analytics_deps)"
     columns:
-      - name: section_type
+      - name: assignee
+        tests:
+          - unique
+          - not_null
+      - name: n_assigned
         tests:
           - not_null
-          - accepted_values:
-              values: ['assignee', 'issue_links']
-      - name: entity_key
+      - name: n_fixed
+        tests:
+          - not_null
+
+  - name: mart_analytics_links
+    description: "Agrégats de liens entre tickets (colonnes plates — remplace mart_analytics_deps)"
+    columns:
+      - name: key
+        tests:
+          - unique
+          - not_null
+      - name: n_links_total
         tests:
           - not_null

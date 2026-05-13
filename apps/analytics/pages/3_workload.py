@@ -22,14 +22,12 @@ def load_assignee_data() -> pd.DataFrame:
     return query("""
         SELECT
             assignee,
-            COUNT(*)                                         AS n_assigned,
-            COUNT(CASE WHEN resolution = 'Fixed' THEN 1 END) AS n_fixed,
-            ROUND(AVG(resolution_days), 1)                   AS avg_resolution_days,
-            MODE(issuetype)                                  AS dominant_issuetype
-        FROM PFE_SPARK.INTERMEDIATE.INT_ISSUES_CLEANED
-        WHERE assignee != 'Unassigned'
-        GROUP BY assignee
-        HAVING n_assigned >= 5
+            n_assigned,
+            n_fixed,
+            avg_resolution_days,
+            top_issuetype AS dominant_issuetype
+        FROM PFE_SPARK.MARTS_ANALYTICS.MART_ANALYTICS_WORKLOAD
+        WHERE n_assigned >= 5
         ORDER BY n_assigned DESC
         LIMIT 20
     """)
